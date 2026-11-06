@@ -1,35 +1,16 @@
-# RL in Minecraft
+# Q-learning in Minecraft
 
-A tabular Q-learning agent that learns to navigate a Minecraft maze, built on
-[Project Malmo](https://github.com/microsoft/malmo) (Microsoft's AI platform for
-Minecraft).
+A tabular Q-learning agent that searches for diamond blocks in two Minecraft maps built with [Project Malmo](https://github.com/microsoft/malmo).
+
+## Run a mission
+
+1. Follow the Project Malmo setup instructions and start its Minecraft client. Use a Python environment that can import `MalmoPython`, `future`, and Tkinter.
+2. From the repository root, run `python final.py`.
+
+Watch the agent move in Minecraft and the estimated action values change in the **Q-table** window. The terminal prints cumulative rewards for completed episodes. The mission awards +100 for touching a diamond block and ends the episode.
 
 ## How it works
 
-- **State**: the agent's discrete grid position.
-- **Actions**: `moveeast 1`, `movewest 1`, `movenorth 1`, `movesouth 1`.
-- **Learning**: tabular Q-learning with `alpha = 0.3`, `gamma = 1.0`,
-  `epsilon = 0.01`. The action choice is biased towards the goal direction, and
-  illegal moves (walls, boundary, falling off the platform) are penalised so the
-  table converges without exploring the whole map.
-- **Reward**: reaching the fixed goal cell ends the episode.
-
-`final.py` also has an optional Tkinter canvas that draws the Q-values while the
-agent trains, which is handy for seeing the policy take shape.
-
-## Files
-
-| File | Purpose |
-| --- | --- |
-| `final.py` | The agent: mission setup, Q-table update, optional visualisation |
-| `final.xml` | Malmo mission used for training |
-| `final_test.xml` | Mission on a different map, used to check generalisation |
-
-## Run
-
-1. Install Project Malmo and launch Minecraft with the Malmo mod.
-2. `python final.py`
-
-Hyperparameters, the goal cell and the map size are constants at the top of
-`TabQAgent.__init__`; change them together with the mission XML when switching
-maps.
+- The agent uses its integer X/Z position as the state and chooses among four cardinal movement actions.
+- Q-learning uses a learning rate of 0.3, a discount factor of 1.0, and an exploration rate of 0.01. The agent also biases action values toward the goal and uses jump commands when movement stalls.
+- Training runs on [`final.xml`](final.xml). If it records block patterns during successful training runs, [`final.py`](final.py) starts a fresh agent on [`final_test.xml`](final_test.xml) and passes those patterns to it. The second agent starts with an empty Q-table.
