@@ -42,9 +42,7 @@ class TabQAgent(object):
         self.new_map = new_map
 
     def calculateDir(self, curr_x, curr_y, goal_x, goal_y):
-        #print("------- CALCULATING -------")
-        
-        #prob = [0.25,0.50,0.75]
+        a = None
         weights = [0.25,0.25,0.25,0.25]
         if curr_x  - goal_x < 0:
             #prob[0] += 0.1
@@ -62,19 +60,8 @@ class TabQAgent(object):
             #prob[2] += 0.1
             a = 2
             weights[2] += 0.5
-        #print(prob)
-        weights = [w/sum(weights) for w in weights]
-        return a, weights
-        p = random.random()
-        if p <= prob[0]:
-            return 0, weights
-        elif p > prob[0] and p <= prob[1]:
-            return 1, weights
-        elif p > prob[1] and p <= prob[2]:
-            return 2, weights
-        else:
-            return 3, weights
-
+        total_weight = sum(weights)
+        return a, [weight / total_weight for weight in weights]
 
     def act(self, world_state, agent_host, current_r ):
         """take 1 action in response to the current world state"""
@@ -223,12 +210,12 @@ class TabQAgent(object):
                 goal_x = self.goal.split(":")[0]
                 goal_y = self.goal.split(":")[1]
                 bonus, weights = self.calculateDir(new_x,new_y,int(goal_x),int(goal_y))
-                left = bonus-1 if bonus > 0 else 3
-                right = bonus+1 if bonus < 3 else 0
-
-                self.q_table[current_s][bonus] += (0.5 * weights[bonus])
-                self.q_table[current_s][left] += (0.5 * weights[left])
-                self.q_table[current_s][right] += (0.5 * weights[right])
+                if bonus is not None:
+                    left = (bonus - 1) % len(self.actions)
+                    right = (bonus + 1) % len(self.actions)
+                    self.q_table[current_s][bonus] += 0.5 * weights[bonus]
+                    self.q_table[current_s][left] += 0.5 * weights[left]
+                    self.q_table[current_s][right] += 0.5 * weights[right]
 
             # if self.cross == 1:
             #     agent_host.sendCommand(self.actions[self.last_a])
@@ -275,10 +262,20 @@ class TabQAgent(object):
         
         return current_r
 
+    def read_rewards(self, world_state):
+        for error in world_state.errors:
+            print("Error: %s" % error.text)
+        values = [reward.getValue() for reward in world_state.rewards]
+        if 100 in values:
+            self.goal_found = True
+        return sum(values)
+
     def run(self, agent_host):
         """run the agent on the world"""
 
         total_reward = 0
+        obs = None
+        self.goal_found = False
         
         self.prev_s = None
         self.prev_a = None
@@ -287,20 +284,15 @@ class TabQAgent(object):
         
         # main loop:
         world_state = agent_host.getWorldState()
-        #print("state: ",world_state)
+        current_r = self.read_rewards(world_state)
         while world_state.is_mission_running:
-
-            current_r = 0
             
             if is_first_action:
                 # wait until have received a valid observation
                 while True:
                     time.sleep(0.1)
                     world_state = agent_host.getWorldState()
-                    for error in world_state.errors:
-                        print("Error: %s" % error.text)
-                    for reward in world_state.rewards:
-                        current_r += reward.getValue()
+                    current_r += self.read_rewards(world_state)
                         
                     if world_state.is_mission_running and len(world_state.observations)>0 and not world_state.observations[-1].text=="{}":
                         obs_text = world_state.observations[-1].text
@@ -316,20 +308,13 @@ class TabQAgent(object):
                 while world_state.is_mission_running and current_r == 0:
                     time.sleep(0.1)
                     world_state = agent_host.getWorldState()
-                    for error in world_state.errors:
-                        print("Error: %s" % error.text)
-                    for reward in world_state.rewards:
-                        
-                        current_r += reward.getValue()
+                    current_r += self.read_rewards(world_state)
                         
                 # allow time to stabilise after action
-                while True:
+                while world_state.is_mission_running:
                     time.sleep(0.1)
                     world_state = agent_host.getWorldState()
-                    for error in world_state.errors:
-                        print("Error: %s" % error.text)
-                    for reward in world_state.rewards:
-                        current_r += reward.getValue()
+                    current_r += self.read_rewards(world_state)
                         
                     if world_state.is_mission_running and len(world_state.observations)>0 and not world_state.observations[-1].text=="{}":
                         #print("TRYING TO ACT")
@@ -342,16 +327,19 @@ class TabQAgent(object):
                         break
                     if not world_state.is_mission_running:
                         break
-        #print("Q-Table: ", self.q_table)
+            if world_state.is_mission_running:
+                current_r = 0
+
         # process final reward
         total_reward += current_r
-        if current_r > 90:
+        if self.goal_found:
             print("###### GOAL FOUND ######")
             for k,v in self.boundary.items():
                 self.patterns[k] += 1
             #print("PATTERN: ",self.patterns)
-            self.goal = current_s
-            self.alti = int(obs[u'YPos'])
+            if obs is not None:
+                self.goal = current_s
+                self.alti = int(obs[u'YPos'])
             #print("---- alti: ",self.alti)
         #print("--- Total reward: ", total_reward)
 
@@ -555,7 +543,7 @@ if saved_patterns != {}:
         
         print('Cumulative reward: %d' % cumulative_reward)
         cumulative_rewards += [ cumulative_reward ]
-        if agent.goal != "":
+        if agent.goal_found:
             time.sleep(30)
             break
 
@@ -564,4 +552,6 @@ if saved_patterns != {}:
         agent.boundary = {}
         time.sleep(0.5) # (let the Mod reset)
     else:
-        print("Training Failed.")
+        print("No diamond found on the test map.")
+else:
+    print("No block patterns recorded in training. Skipping the test map.")
