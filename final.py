@@ -27,19 +27,22 @@ class TabQAgent(object):
         self.canvas = None
         self.root = None
 
-        self.last_s = (0.0,0.0) 
-        self.last_a = 0
         self.gamma = 1
         self.alpha = 0.3
         self.count = 0
         self.goal = "-9:1"
-        self.alti = 33
         self.patterns = patterns
+        self.new_map = new_map
+        self.reset_episode()
+
+    def reset_episode(self):
+        self.prev_s = self.prev_a = None
+        self.last_s = None
         self.boundary = {}
         self.onboard = 0
         self.ban = -1
-        self.test_mode = False
-        self.new_map = new_map
+        self.goal_found = False
+        self.steps = 0
 
     def calculateDir(self, curr_x, curr_y, goal_x, goal_y):
         a = None
@@ -63,204 +66,90 @@ class TabQAgent(object):
         total_weight = sum(weights)
         return a, [weight / total_weight for weight in weights]
 
-    def act(self, world_state, agent_host, current_r ):
-        """take 1 action in response to the current world state"""
-        action_sent = 0
-        if current_r > 15 and current_r < 25:
-            block = "block1"
-            if block not in self.boundary:
-                self.boundary[block] = 1
-            # else:
-            #     self.boundary[block] = 1-self.boundary[block]       
-                #print(self.boundary[block])         
-                
-            current_r -= 20
-            #print("------Wool Detected")
-        elif current_r > 45 and current_r < 55:
-            block = "block2"
-            if block not in self.boundary:
-                self.boundary[block] = 1
-            # else:
-            #     self.boundary[block] = 1-self.boundary[block]
-                
-            current_r -= 50
-            #print("------Sand Detected")
+    def act(self, world_state, agent_host, current_r):
+        """Credit the previous move, then send and record the next move."""
+        previous_state, previous_action = self.prev_s, self.prev_a
+        self.prev_s = self.prev_a = None
 
-        elif current_r > 65 and current_r < 75:
-            block = "block3"
-            if block not in self.boundary:
+        block = None
+        for reward, name in ((20, "block1"), (50, "block2"), (70, "block3")):
+            if reward - 5 < current_r < reward + 5:
+                block = name
                 self.boundary[block] = 1
-            # else:
-            #     self.boundary[block] = 1-self.boundary[block]
-                
-            current_r -= 70
-            #print("------Iron Detected")
-        else:
-            block = ""
-            if self.onboard == 1 and self.ban != -1:
-                print("Leaving... Send back")
-                #self.q_table[self.prev_s][self.last_a] -= 10
-                if self.last_a == 0 or self.last_a == 2:
-                    agent_host.sendCommand(self.actions[self.last_a+1])
-                else:
-                    agent_host.sendCommand(self.actions[self.last_a-1])
-                action_sent = 1
-                self.ban = self.last_a
+                current_r -= reward
+                break
+
+        action = None
+        if block is None:
+            if self.onboard and self.ban != -1 and previous_action is not None:
+                action = previous_action ^ 1  # Paired directions are opposites.
+                self.ban = previous_action
             self.boundary = {}
-        # print("Banned Action: ",self.ban)
-        #print("-----boundary: ",self.boundary)
-        
-        if block != "" and self.new_map == 1:
+        elif self.new_map == 1 and previous_action is not None:
             if block not in self.patterns:
-                print("reversing...")
-                self.q_table[self.prev_s][self.last_a] -= 10
-                if self.last_a == 0 or self.last_a == 2:
-                    agent_host.sendCommand(self.actions[self.last_a+1])
-                else:
-                    agent_host.sendCommand(self.actions[self.last_a-1])
-                action_sent = 1
-                
-            elif self.onboard == 0: 
-                print("Approaching...")
+                self.q_table[previous_state][previous_action] -= 10
+                action = previous_action ^ 1
+            elif not self.onboard:
                 self.onboard = 1
-                self.q_table[self.prev_s][self.last_a] += 10
-                agent_host.sendCommand(self.actions[self.last_a])
+                self.q_table[previous_state][previous_action] += 10
+                action = previous_action
                 if self.ban == -1:
-                    self.ban = self.last_a
-                action_sent = 1
+                    self.ban = previous_action
 
-        
-        obs_text = world_state.observations[-1].text
-        obs = json.loads(obs_text) # most recent observation
-      
-        # location get
-        #current_s = "%d:%d:%d" % (int(obs[u'XPos']), int(obs[u'ZPos']), int(obs[u'YPos']))
-        current_s = "%d:%d" % (int(obs[u'XPos']), int(obs[u'ZPos']))
-        if current_s not in self.q_table:
-            #print("--- q_table updated")
-            self.q_table[current_s] = ([0] * len(self.actions))
+        obs = json.loads(world_state.observations[-1].text)
+        x, z = float(obs[u'XPos']), float(obs[u'ZPos'])
+        current_state = "%d:%d" % (int(x), int(z))
+        values = self.q_table.setdefault(current_state, [0] * len(self.actions))
 
-        # update Q values
-        if self.prev_s is not None and self.prev_a is not None:
-            #print("--- q_value updated")
-            old_q = self.q_table[self.prev_s][self.prev_a]
-            self.q_table[self.prev_s][self.prev_a] = old_q + self.alpha * (current_r
-                + self.gamma * max(self.q_table[current_s]) - old_q)
-            #self.updateQTable( current_r, current_s )
+        if previous_action is not None:
+            old_q = self.q_table[previous_state][previous_action]
+            self.q_table[previous_state][previous_action] = old_q + self.alpha * (
+                current_r + self.gamma * max(values) - old_q
+            )
 
-        self.drawQ( curr_x = int(obs[u'XPos'])+20, curr_y = int(obs[u'ZPos'])+10)
+        self.drawQ(curr_x=int(x) + 20, curr_y=int(z) + 10)
 
-        if random.uniform(0, 1) < self.epsilon:
-            a = random.randint(0,len(self.actions) - 1)
-        else:
-            v = max(self.q_table[current_s])
-            rand_list = []
-            for i in range(0,len(self.actions)):
-                if self.q_table[current_s][i] == v:
-                    rand_list.append(self.actions[i])
-            a = self.actions.index(rand_list[random.randint(0,len(rand_list) - 1)])
+        commands = None
+        if action is None:
+            if previous_action is not None and self.last_s == (x, z):
+                action = previous_action
+                jump_commands = (
+                    ("turn 90", "turn 90", "jumpmove 1", "turn -90", "turn -90"),
+                    ("jumpmove 1",),
+                    ("turn 90", "jumpmove 1", "turn -90"),
+                    ("turn -90", "jumpmove 1", "turn 90"),
+                )
+                commands = jump_commands[action]
+            elif random.uniform(0, 1) < self.epsilon:
+                action = random.randint(0, len(self.actions) - 1)
+            else:
+                best_value = max(values)
+                action = random.choice([i for i, value in enumerate(values) if value == best_value])
+            if commands is None and action == self.ban:
+                action = random.choice([i for i in range(len(self.actions)) if i != self.ban])
 
-        # try to send the selected action, only update prev_s if this succeeds
-        try:
-            #print("--- sending command")
-            new_x = float(obs[u'XPos'])
-            new_y = float(obs[u'ZPos'])
-            #print(new_x,new_y)
-            if self.test_mode:
-                curr_h = float(obs[u'YPos'])
-                if curr_h < self.alti:
-                    # Climb mode
-                    pass
-                else:
-                    # Dig mode
-                    pass
+        if self.goal:
+            goal_x, goal_z = self.goal.split(":")
+            bonus, weights = self.calculateDir(x, z, int(goal_x), int(goal_z))
+            if bonus is not None:
+                for direction in (bonus, (bonus - 1) % len(self.actions), (bonus + 1) % len(self.actions)):
+                    values[direction] += 0.5 * weights[direction]
 
-            if self.last_s == (new_x,new_y):
-                if self.last_a == 0:
-                    agent_host.sendCommand("turn 90")
-                    time.sleep(0.2)
-                    agent_host.sendCommand("turn 90")
-                    time.sleep(0.2)
-                    agent_host.sendCommand("jumpmove 1")
-                    time.sleep(0.2)
-                    agent_host.sendCommand("turn -90")
-                    time.sleep(0.2)
-                    agent_host.sendCommand("turn -90")
-                    #current_r += 0.5
-                elif self.last_a == 1:
-                    agent_host.sendCommand("jumpmove 1")
-                    #current_r += 0.5
-                elif self.last_a == 2:
-                    agent_host.sendCommand("turn 90")
-                    time.sleep(0.2)
-                    agent_host.sendCommand("jumpmove 1")
-                    #current_r += 0.5
-                    time.sleep(0.2)
-                    agent_host.sendCommand("turn -90")
-                elif self.last_a == 3:
-                    agent_host.sendCommand("turn -90")
-                    time.sleep(0.2)
-                    agent_host.sendCommand("jumpmove 1") 
-                    #current_r += 0.5
-                    time.sleep(0.2)
-                    agent_host.sendCommand("turn 90")
-                action_sent = 1
-            
-            if self.goal != "":
-                goal_x = self.goal.split(":")[0]
-                goal_y = self.goal.split(":")[1]
-                bonus, weights = self.calculateDir(new_x,new_y,int(goal_x),int(goal_y))
-                if bonus is not None:
-                    left = (bonus - 1) % len(self.actions)
-                    right = (bonus + 1) % len(self.actions)
-                    self.q_table[current_s][bonus] += 0.5 * weights[bonus]
-                    self.q_table[current_s][left] += 0.5 * weights[left]
-                    self.q_table[current_s][right] += 0.5 * weights[right]
-
-            # if self.cross == 1:
-            #     agent_host.sendCommand(self.actions[self.last_a])
-            #     time.sleep(0.2)
-            #     curr_r = 0
-            #     for reward in world_state.rewards:
-            #             curr_r += reward.getValue()
-            #     while curr_r > 0:
-            #         agent_host.sendCommand(self.actions[self.last_a])
-            #         time.sleep(0.2)
-            #         curr_r = 0
-            #         for reward in world_state.rewards:
-            #             curr_r += reward.getValue()
-                
-            #    self.noJump = 1
-            #    self.cross = 0
-            # else:
-            #     self.noJump = 0
+        movement = "jumpmove 1" if commands is not None else self.actions[action]
+        if commands is None:
+            commands = (movement,)
             time.sleep(0.2)
-            if action_sent == 0:
-                print("Banned Action: ",self.ban)
-                if a != self.ban:
-                    agent_host.sendCommand(self.actions[a])
-                else:
-                    while a == self.ban:
-                        a = random.randint(0,len(self.actions) - 1)
-                    agent_host.sendCommand(self.actions[a])
-                self.last_a = a
-            time.sleep(0.1)
-            
-            # if self.count % 2 == 0 :
-            #agent_host.sendCommand("movewest 1")
-            #time.sleep(0.1)
-            
-            self.last_s = (new_x,new_y)
-            
-            
-            #self.actions[a]
-            self.prev_s = current_s
-            self.prev_a = a
-
-        except RuntimeError as e:
-            print("Failed to send command: %s" % e)
-        
-        return current_r
+        try:
+            for command in commands:
+                agent_host.sendCommand(command)
+                if command == movement:
+                    self.prev_s = current_state
+                    self.prev_a = action
+                    self.last_s = (x, z)
+                    self.steps += 1
+                time.sleep(0.2 if len(commands) > 1 else 0.1)
+        except RuntimeError as error:
+            print("Failed to send command: %s" % error)
 
     def read_rewards(self, world_state):
         for error in world_state.errors:
@@ -275,10 +164,7 @@ class TabQAgent(object):
 
         total_reward = 0
         obs = None
-        self.goal_found = False
-        
-        self.prev_s = None
-        self.prev_a = None
+        self.reset_episode()
         
         is_first_action = True
         
@@ -298,7 +184,8 @@ class TabQAgent(object):
                         obs_text = world_state.observations[-1].text
                         obs = json.loads(obs_text)
                         current_s = "%d:%d" % (int(obs[u'XPos']), int(obs[u'ZPos']))
-                        total_reward += self.act(world_state, agent_host, current_r)
+                        self.act(world_state, agent_host, current_r)
+                        total_reward += current_r
                         break
                     if not world_state.is_mission_running:
                         break
@@ -321,7 +208,8 @@ class TabQAgent(object):
                         obs_text = world_state.observations[-1].text
                         obs = json.loads(obs_text)
                         current_s = "%d:%d" % (int(obs[u'XPos']), int(obs[u'ZPos']))
-                        total_reward += self.act(world_state, agent_host, current_r)
+                        self.act(world_state, agent_host, current_r)
+                        total_reward += current_r
                         print("--- Total reward: ", total_reward)
                         
                         break
@@ -339,7 +227,6 @@ class TabQAgent(object):
             #print("PATTERN: ",self.patterns)
             if obs is not None:
                 self.goal = current_s
-                self.alti = int(obs[u'YPos'])
             #print("---- alti: ",self.alti)
         #print("--- Total reward: ", total_reward)
 
@@ -403,6 +290,11 @@ else:
     import functools
     print = functools.partial(print, flush=True)
 
+def print_summary(phase, rewards, successes):
+    print("%s summary: %d/%d episodes found a diamond, mean reward %.1f"
+          % (phase, successes, len(rewards), sum(rewards) / float(len(rewards))))
+
+
 agent = TabQAgent(defaultdict(int),0)
 agent_host = MalmoPython.AgentHost()
 
@@ -434,6 +326,7 @@ else:
     num_repeats = 30
 
 cumulative_rewards = []
+successes = 0
 for i in range(num_repeats):
     start_time = time.time()
     print()
@@ -466,8 +359,10 @@ for i in range(num_repeats):
     cumulative_reward = agent.run(agent_host)
     agent.count += 1
 
-    print('Cumulative reward: %d' % cumulative_reward)
-    cumulative_rewards += [ cumulative_reward ]
+    print("Episode: %d moves, reward %.1f, diamond %s"
+          % (agent.steps, cumulative_reward, "found" if agent.goal_found else "not found"))
+    cumulative_rewards.append(cumulative_reward)
+    successes += int(agent.goal_found)
     
     end_time = time.time()
     time_taken = end_time - start_time
@@ -475,8 +370,8 @@ for i in range(num_repeats):
 
     # -- clean up -- #
     print("PATTERN: ",agent.patterns)
-    agent.boundary = {}
     time.sleep(0.5) # (let the Mod reset)
+print_summary("Training", cumulative_rewards, successes)
 saved_patterns = agent.patterns
 if saved_patterns != {}:
     print("Training Done.")
@@ -510,6 +405,7 @@ if saved_patterns != {}:
     num_repeats = 10
 
     cumulative_rewards = []
+    successes = 0
     for i in range(num_repeats):
 
         print()
@@ -541,17 +437,19 @@ if saved_patterns != {}:
         # -- run the agent in the world -- #
         cumulative_reward = agent.run(agent_host)
         
-        print('Cumulative reward: %d' % cumulative_reward)
-        cumulative_rewards += [ cumulative_reward ]
+        print("Episode: %d moves, reward %.1f, diamond %s"
+              % (agent.steps, cumulative_reward, "found" if agent.goal_found else "not found"))
+        cumulative_rewards.append(cumulative_reward)
+        successes += int(agent.goal_found)
         if agent.goal_found:
             time.sleep(30)
             break
 
         # -- clean up -- #
         print("PATTERN: ",agent.patterns)
-        agent.boundary = {}
         time.sleep(0.5) # (let the Mod reset)
     else:
         print("No diamond found on the test map.")
+    print_summary("Test", cumulative_rewards, successes)
 else:
     print("No block patterns recorded in training. Skipping the test map.")
